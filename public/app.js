@@ -6,18 +6,117 @@ let socket = null;
 let reconnectInterval = 3000;
 let statsSubscribed = false;
 
+// Security helpers
+let isLoginOverlayVisible = false;
+
+function showLoginOverlay() {
+  const overlay = document.getElementById('login-overlay');
+  if (overlay) {
+    overlay.classList.remove('hidden');
+    isLoginOverlayVisible = true;
+  }
+}
+
+function hideLoginOverlay() {
+  const overlay = document.getElementById('login-overlay');
+  if (overlay) {
+    overlay.classList.add('hidden');
+    isLoginOverlayVisible = false;
+  }
+  const errorMsg = document.getElementById('login-error-msg');
+  if (errorMsg) {
+    errorMsg.classList.add('hidden');
+  }
+}
+
+async function authFetch(url, options = {}) {
+  const pin = localStorage.getItem('antigravity_pin') || '';
+  if (!options.headers) {
+    options.headers = {};
+  }
+  if (pin) {
+    options.headers['Authorization'] = `Bearer ${pin}`;
+  }
+  
+  try {
+    const res = await fetch(url, options);
+    if (res.status === 401) {
+      showLoginOverlay();
+      throw new Error('Unauthorized');
+    }
+    return res;
+  } catch (err) {
+    console.error('Fetch error:', err);
+    throw err;
+  }
+}
+
+async function attemptLogin() {
+  const pinInput = document.getElementById('pin-input');
+  const pin = pinInput.value.trim();
+  const errorMsg = document.getElementById('login-error-msg');
+  const btnLogin = document.getElementById('btn-login');
+  
+  if (!/^\d{6}$/.test(pin)) {
+    errorMsg.textContent = 'Mã PIN phải là 6 chữ số.';
+    errorMsg.classList.remove('hidden');
+    return;
+  }
+  
+  btnLogin.disabled = true;
+  errorMsg.classList.add('hidden');
+  
+  try {
+    const res = await fetch('/api/auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pin })
+    });
+    
+    if (res.ok) {
+      localStorage.setItem('antigravity_pin', pin);
+      hideLoginOverlay();
+      pinInput.value = '';
+      
+      // Reconnect WebSocket with new PIN token
+      if (socket) {
+        socket.close();
+      } else {
+        connect();
+      }
+      
+      // Reload page state
+      loadModelConfig();
+      loadConversationsDropdown();
+      loadSecuritySettingsUI();
+    } else {
+      errorMsg.textContent = 'Mã PIN không đúng. Vui lòng thử lại.';
+      errorMsg.classList.remove('hidden');
+    }
+  } catch (err) {
+    errorMsg.textContent = 'Lỗi kết nối tới server.';
+    errorMsg.classList.remove('hidden');
+  } finally {
+    btnLogin.disabled = false;
+  }
+}
+
 // Connect to websocket server
 function connect() {
   updateConnectionStatus('connecting', 'Connecting...');
   
-  socket = new WebSocket(wsUrl);
+  const pin = localStorage.getItem('antigravity_pin') || '';
+  const wsUrlWithToken = pin ? `${wsUrl}?token=${pin}` : wsUrl;
+  
+  socket = new WebSocket(wsUrlWithToken);
 
   socket.onopen = () => {
     console.log('Connected to server');
     updateConnectionStatus('connected', 'Connected');
     
-    // Load model config initially
+    // Load model config and security settings initially
     loadModelConfig();
+    loadSecuritySettingsUI();
 
     // Subscribe to stats if the active tab is Monitor
     if (document.getElementById('panel-monitor').classList.contains('active')) {
@@ -44,11 +143,16 @@ function connect() {
     }
   };
 
-  socket.onclose = () => {
+  socket.onclose = (event) => {
     console.log('Connection closed, retrying...');
     updateConnectionStatus('disconnected', 'Offline (Retrying...)');
     statsSubscribed = false;
-    setTimeout(connect, reconnectInterval);
+    
+    if (event.code === 4001) {
+      showLoginOverlay();
+    } else {
+      setTimeout(connect, reconnectInterval);
+    }
   };
 
   socket.onerror = (err) => {
@@ -89,6 +193,9 @@ function sendControl(action) {
 // Handle all incoming socket payloads
 function handleServerMessage(msg) {
   switch (msg.type) {
+    case 'auth_failed':
+      showLoginOverlay();
+      break;
     case 'stats':
       updateStatsUI(msg.data);
       break;
@@ -100,7 +207,9 @@ function handleServerMessage(msg) {
       refreshActiveChat();
       break;
     case 'transcript_update':
-      refreshActiveChat(msg.activeConvoId);
+      if (!activeConvoId || msg.activeConvoId === activeConvoId) {
+        refreshActiveChat(msg.activeConvoId);
+      }
       break;
     case 'control_ack':
       console.log(`Action ${msg.action} executed. Success: ${msg.success}`);
@@ -112,6 +221,14 @@ function handleServerMessage(msg) {
 function updateStatsUI(data) {
   const { cpu, mem, battery } = data;
   
+  // Media Info Update
+  const mediaTitle = document.getElementById('media-title');
+  const mediaArtist = document.getElementById('media-artist');
+  if (mediaTitle && mediaArtist && data.media) {
+    mediaTitle.textContent = data.media.track || 'No media playing';
+    mediaArtist.textContent = data.media.artist || 'Spotify / Apple Music';
+  }
+
   // CPU Gauge Update
   const cpuRing = document.getElementById('cpu-ring');
   const cpuVal = document.getElementById('cpu-val');
@@ -212,7 +329,7 @@ if (terminalInput) {
 // Model Config and Selector
 async function loadModelConfig() {
   try {
-    const res = await fetch('/api/model/config');
+    const res = await authFetch('/api/model/config');
     const config = await res.json();
     const selector = document.getElementById('model-selector');
     if (selector) {
@@ -235,7 +352,7 @@ async function loadModelConfig() {
 }
 async function onModelChange(model) {
   try {
-    const res = await fetch('/api/model/select', {
+    const res = await authFetch('/api/model/select', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model })
@@ -252,7 +369,7 @@ async function loadConversationsDropdown() {
   if (!selector) return;
   
   try {
-    const res = await fetch('/api/conversations');
+    const res = await authFetch('/api/conversations');
     const conversations = await res.json();
     
     selector.innerHTML = '';
@@ -281,7 +398,7 @@ async function loadConversationsDropdown() {
 async function onConvoChange(convoId) {
   if (!convoId) return;
   try {
-    const res = await fetch('/api/conversations/active', {
+    const res = await authFetch('/api/conversations/active', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id: convoId })
@@ -421,8 +538,8 @@ async function refreshActiveChat(forceConvoId = null) {
   try {
     if (forceConvoId) {
       activeConvoId = forceConvoId;
-    } else {
-      const activeRes = await fetch('/api/conversations/active');
+    } else if (!activeConvoId) {
+      const activeRes = await authFetch('/api/conversations/active');
       if (!activeRes.ok) {
         renderChatPlaceholder();
         return;
@@ -431,7 +548,7 @@ async function refreshActiveChat(forceConvoId = null) {
       activeConvoId = activeData.id;
     }
 
-    const convoRes = await fetch(`/api/conversations/${activeConvoId}`);
+    const convoRes = await authFetch(`/api/conversations/${activeConvoId}`);
     if (!convoRes.ok) {
       renderChatPlaceholder();
       return;
@@ -490,7 +607,8 @@ function submitAgentPrompt() {
   if (socket && socket.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify({
       type: 'agent_submit',
-      prompt
+      prompt,
+      convoId: activeConvoId
     }));
     appendAgentLog(`[Prompt] Submitted task: "${prompt}"`, 'prompt');
     promptArea.value = '';
@@ -498,7 +616,7 @@ function submitAgentPrompt() {
     document.getElementById('autocomplete-popup').classList.add('hidden');
     
     // Refresh chat immediately to show user bubble (after small delay for log writing)
-    setTimeout(refreshActiveChat, 200);
+    setTimeout(() => refreshActiveChat(activeConvoId), 200);
   } else {
     alert('Not connected to Mac server');
   }
@@ -609,7 +727,7 @@ async function fetchProjects() {
   list.innerHTML = '';
   
   try {
-    const res = await fetch('/api/projects');
+    const res = await authFetch('/api/projects');
     const projects = await res.json();
     loading.style.display = 'none';
     
@@ -661,7 +779,7 @@ async function fetchConversations() {
   list.innerHTML = '';
   
   try {
-    const res = await fetch('/api/conversations');
+    const res = await authFetch('/api/conversations');
     const conversations = await res.json();
     loading.style.display = 'none';
     
@@ -721,7 +839,7 @@ async function openConversation(id, title) {
   overlay.classList.add('active');
   
   try {
-    const res = await fetch(`/api/conversations/${id}`);
+    const res = await authFetch(`/api/conversations/${id}`);
     const data = await res.json();
     overlayBody.innerHTML = '';
     
@@ -749,7 +867,7 @@ async function activateCurrentOverlayConvo() {
   if (!currentOverlayConvoId) return;
   
   try {
-    const res = await fetch('/api/conversations/active', {
+    const res = await authFetch('/api/conversations/active', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id: currentOverlayConvoId })
@@ -787,3 +905,86 @@ window.addEventListener('load', handleHashRoute);
 
 // Connect immediately on load
 connect();
+
+// 6. Security & Authorization Settings
+function togglePinInputDisabled() {
+  const toggle = document.getElementById('pin-toggle');
+  const pinField = document.getElementById('settings-pin');
+  if (toggle && pinField) {
+    pinField.disabled = !toggle.checked;
+  }
+}
+
+async function loadSecuritySettingsUI() {
+  try {
+    const res = await authFetch('/api/settings');
+    const settings = await res.json();
+    
+    const toggle = document.getElementById('pin-toggle');
+    const pinField = document.getElementById('settings-pin');
+    
+    if (toggle) {
+      toggle.checked = settings.pinSecurityEnabled;
+    }
+    if (pinField) {
+      pinField.value = settings.pin || '';
+    }
+    togglePinInputDisabled();
+  } catch (err) {
+    console.error('Error loading security settings:', err);
+  }
+}
+
+async function saveSecuritySettings() {
+  const toggle = document.getElementById('pin-toggle');
+  const pinField = document.getElementById('settings-pin');
+  const statusMsg = document.getElementById('settings-status-msg');
+  const btn = document.getElementById('btn-save-settings');
+  
+  if (!toggle || !pinField || !statusMsg) return;
+  
+  const pinSecurityEnabled = toggle.checked;
+  const pin = pinField.value.trim();
+  
+  if (pinSecurityEnabled && !/^\d{6}$/.test(pin)) {
+    statusMsg.textContent = 'PIN must be exactly 6 digits';
+    statusMsg.className = 'settings-status-msg error';
+    return;
+  }
+  
+  btn.disabled = true;
+  statusMsg.textContent = 'Saving...';
+  statusMsg.className = 'settings-status-msg';
+  
+  try {
+    const res = await authFetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pinSecurityEnabled, pin })
+    });
+    
+    if (res.ok) {
+      const data = await res.json();
+      statusMsg.textContent = 'Settings saved successfully!';
+      statusMsg.className = 'settings-status-msg success';
+      
+      // Update local storage PIN if enabled and changed
+      if (pinSecurityEnabled && pin) {
+        localStorage.setItem('antigravity_pin', pin);
+      }
+      
+      setTimeout(() => {
+        statusMsg.textContent = '';
+      }, 3000);
+    } else {
+      const errData = await res.json();
+      statusMsg.textContent = errData.error || 'Failed to save settings';
+      statusMsg.className = 'settings-status-msg error';
+    }
+  } catch (err) {
+    statusMsg.textContent = 'Error connecting to server';
+    statusMsg.className = 'settings-status-msg error';
+  } finally {
+    btn.disabled = false;
+  }
+}

@@ -1488,4 +1488,215 @@ body {
   letter-spacing: 0.03em;
 }
 
+/* Switch toggle styling */
+.switch {
+  position: relative;
+  display: inline-block;
+  width: 48px;
+  height: 26px;
+}
+
+.switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.slider {
+  position: absolute;
+  cursor: pointer;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(255, 255, 255, 0.1);
+  transition: .3s;
+  border: 1px solid var(--panel-border);
+}
+
+.slider:before {
+  position: absolute;
+  content: "";
+  height: 18px;
+  width: 18px;
+  left: 3px;
+  bottom: 3px;
+  background-color: white;
+  transition: .3s;
+}
+
+input:checked + .slider {
+  background-color: var(--accent-blue);
+  border-color: transparent;
+}
+
+input:focus + .slider {
+  box-shadow: 0 0 1px var(--accent-blue);
+}
+
+input:checked + .slider:before {
+  transform: translateX(22px);
+}
+
+.slider.round {
+  border-radius: 34px;
+}
+
+.slider.round:before {
+  border-radius: 50%;
+}
+
+/* Login Overlay Styling */
+.login-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background: rgba(6, 7, 13, 0.85);
+  backdrop-filter: blur(25px);
+  -webkit-backdrop-filter: blur(25px);
+  z-index: 9999;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 20px;
+}
+
+.login-overlay.hidden {
+  display: none !important;
+}
+
+.login-card {
+  width: 100%;
+  max-width: 380px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 35px 25px;
+  border-radius: 24px;
+  animation: scaleIn 0.3s ease;
+}
+
+.login-card .logo-orb {
+  width: 24px;
+  height: 24px;
+  margin-bottom: 20px;
+}
+
+.login-card h2 {
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 8px;
+}
+
+.login-subtitle {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  margin-bottom: 25px;
+}
+
+.pin-input-container {
+  width: 100%;
+  margin-bottom: 20px;
+}
+
+.pin-input-field {
+  width: 100%;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--panel-border);
+  border-radius: 12px;
+  padding: 14px;
+  color: white;
+  font-family: var(--font-mono);
+  font-size: 1.5rem;
+  text-align: center;
+  letter-spacing: 0.5em;
+  outline: none;
+  transition: all 0.2s ease;
+}
+
+.pin-input-field:focus {
+  border-color: var(--accent-blue);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.login-error {
+  color: var(--accent-red);
+  font-size: 0.85rem;
+  margin-top: 15px;
+  font-weight: 500;
+}
+
+.login-error.hidden {
+  display: none !important;
+}
+
+/* Security Settings Forms */
+.security-settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.settings-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.95rem;
+}
+
+.settings-pin-field {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  color: white;
+  font-family: var(--font-mono);
+  font-size: 1rem;
+  text-align: center;
+  letter-spacing: 0.2em;
+  width: 120px;
+  outline: none;
+  transition: all 0.2s ease;
+}
+
+.settings-pin-field:focus {
+  border-color: var(--accent-blue);
+}
+
+.settings-pin-field:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.settings-status-msg {
+  font-size: 0.8rem;
+  text-align: center;
+  margin-top: 5px;
+  transition: all 0.3s ease;
+}
+
+.settings-status-msg.success {
+  color: var(--accent-green);
+}
+
+.settings-status-msg.error {
+  color: var(--accent-red);
+}
+
+@keyframes scaleIn {
+  from {
+    transform: scale(0.95);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+
 

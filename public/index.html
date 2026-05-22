@@ -17,6 +17,22 @@
   <div class="bg-glow sphere-1"></div>
   <div class="bg-glow sphere-2"></div>
 
+  <!-- Login Overlay -->
+  <div id="login-overlay" class="login-overlay hidden">
+    <div class="login-card glass-card">
+      <div class="logo-orb"></div>
+      <h2>Antigravity Hub</h2>
+      <p class="login-subtitle">Nhập mã PIN 6 chữ số để kết nối thiết bị</p>
+      <div class="pin-input-container">
+        <input type="password" id="pin-input" class="pin-input-field" maxlength="6" pattern="[0-9]*" inputmode="numeric" placeholder="••••••" autocomplete="off">
+      </div>
+      <button class="btn-primary" id="btn-login" onclick="attemptLogin()">
+        <i data-lucide="key-round"></i> Kết nối
+      </button>
+      <p class="login-error hidden" id="login-error-msg">Mã PIN không đúng. Vui lòng thử lại.</p>
+    </div>
+  </div>
+
   <div class="app-container">
     <header class="app-header">
       <div class="logo-area">
@@ -36,8 +52,8 @@
         <div class="glass-card">
           <h2><i data-lucide="music"></i> Media Control</h2>
           <div class="media-track-info">
-            <p class="track-title">System Player</p>
-            <p class="track-artist">Spotify / Apple Music</p>
+            <p class="track-title" id="media-title">System Player</p>
+            <p class="track-artist" id="media-artist">Spotify / Apple Music</p>
           </div>
           <div class="media-controls">
             <button class="btn-control icon-btn" id="btn-prev" onclick="sendControl('prev_track')">
@@ -79,6 +95,27 @@
               <div class="action-icon sleep-icon"><i data-lucide="moon"></i></div>
               <span>Sleep Mac</span>
             </button>
+          </div>
+        </div>
+
+        <div class="glass-card">
+          <h2><i data-lucide="shield-check"></i> Security Settings</h2>
+          <div class="security-settings-form">
+            <div class="settings-row">
+              <label for="pin-toggle">Enable PIN Security</label>
+              <label class="switch">
+                <input type="checkbox" id="pin-toggle" onchange="togglePinInputDisabled()">
+                <span class="slider round"></span>
+              </label>
+            </div>
+            <div class="settings-row" id="pin-input-row">
+              <label for="settings-pin">6-Digit PIN</label>
+              <input type="password" id="settings-pin" class="settings-pin-field" maxlength="6" pattern="[0-9]*" inputmode="numeric" placeholder="••••••">
+            </div>
+            <button class="btn-primary" id="btn-save-settings" onclick="saveSecuritySettings()">
+              <i data-lucide="save"></i> Save Settings
+            </button>
+            <p class="settings-status-msg" id="settings-status-msg"></p>
           </div>
         </div>
       </section>

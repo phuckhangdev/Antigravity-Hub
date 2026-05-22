@@ -6,6 +6,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
 import readline from 'readline';
+import os from 'os';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -19,7 +20,60 @@ const PORT = process.env.PORT || 3000;
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.json());
 
-// File paths for Agent interaction
+// 0. Security PIN Configuration
+const SETTINGS_PATH = path.join(__dirname, 'server_settings.json');
+let serverSettings = { pinSecurityEnabled: true, pin: '' };
+
+function loadSettings() {
+  if (!fs.existsSync(SETTINGS_PATH)) {
+    const generatedPin = Math.floor(100000 + Math.random() * 900000).toString();
+    serverSettings = {
+      pinSecurityEnabled: true,
+      pin: generatedPin
+    };
+    fs.writeFileSync(SETTINGS_PATH, JSON.stringify(serverSettings, null, 2));
+    console.log(`\n====================================================`);
+    console.log(`🔑 SECURITY PIN GENERATED: ${generatedPin}`);
+    console.log(`Use this PIN to access Antigravity Hub from mobile.`);
+    console.log(`====================================================\n`);
+  } else {
+    try {
+      serverSettings = JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8'));
+      console.log(`\n====================================================`);
+      console.log(`🔑 SECURITY PIN ACTIVE: ${serverSettings.pinSecurityEnabled ? serverSettings.pin : 'DISABLED'}`);
+      console.log(`====================================================\n`);
+    } catch (e) {
+      const generatedPin = Math.floor(100000 + Math.random() * 900000).toString();
+      serverSettings = { pinSecurityEnabled: true, pin: generatedPin };
+      fs.writeFileSync(SETTINGS_PATH, JSON.stringify(serverSettings, null, 2));
+    }
+  }
+}
+loadSettings();
+
+// Auth validation middleware
+function verifyAuth(req, res, next) {
+  if (!serverSettings.pinSecurityEnabled) {
+    return next();
+  }
+  
+  const authHeader = req.headers['authorization'];
+  let token = null;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    token = authHeader.substring(7);
+  } else if (req.query && req.query.token) {
+    token = req.query.token;
+  }
+  
+  if (token === serverSettings.pin) {
+    return next();
+  }
+  
+  res.status(401).json({ error: 'Unauthorized. Invalid PIN.' });
+}
+
+// File paths for Agent interaction (Dynamic Home Paths)
+const homeDir = os.homedir();
 const AGENT_INPUT_PATH = path.join(__dirname, 'agent_input.json');
 const AGENT_STATUS_PATH = path.join(__dirname, 'agent_status.json');
 
@@ -32,51 +86,80 @@ if (!fs.existsSync(AGENT_STATUS_PATH)) {
   }, null, 2));
 }
 
-// Helper to parse top Mem/CPU output
-function parseSize(str) {
-  const match = str.match(/^([0-9.]+)([GMBK])$/i);
-  if (!match) return 0;
-  const val = parseFloat(match[1]);
-  const unit = match[2].toUpperCase();
-  if (unit === 'G') return val * 1024;
-  if (unit === 'M') return val;
-  if (unit === 'K') return val / 1024;
-  return val;
+// Query total memory once
+let totalMemoryBytes = 0;
+exec('sysctl -n hw.memsize', (err, stdout) => {
+  if (!err && stdout) {
+    totalMemoryBytes = parseInt(stdout.trim(), 10);
+  }
+  if (!totalMemoryBytes) {
+    totalMemoryBytes = os.totalmem();
+  }
+});
+
+// 1. System Metrics Gatherers (Optimized & CPU-friendly)
+let lastCpuTimes = null;
+
+function getCpuTimes() {
+  const cpus = os.cpus();
+  if (!cpus) return { idle: 0, total: 0 };
+  let user = 0, nice = 0, sys = 0, idle = 0, irq = 0;
+  for (const cpu of cpus) {
+    user += cpu.times.user;
+    nice += cpu.times.nice;
+    sys += cpu.times.sys;
+    idle += cpu.times.idle;
+    irq += cpu.times.irq;
+  }
+  return { idle, total: user + nice + sys + idle + irq };
 }
 
-// 1. System Metrics Gatherers
 function getCpuUsage() {
   return new Promise((resolve) => {
-    exec('top -l 1 -n 0 | grep "CPU usage"', (err, stdout) => {
-      if (err || !stdout) return resolve(0);
-      const match = stdout.match(/CPU usage:\s+([0-9.]+)%\s+user,\s+([0-9.]+)%\s+sys/i);
-      if (match) {
-        const user = parseFloat(match[1]);
-        const sys = parseFloat(match[2]);
-        return resolve(Math.round(user + sys));
-      }
-      resolve(0);
-    });
+    const current = getCpuTimes();
+    if (!lastCpuTimes) {
+      lastCpuTimes = current;
+      return resolve(0);
+    }
+    const idleDiff = current.idle - lastCpuTimes.idle;
+    const totalDiff = current.total - lastCpuTimes.total;
+    lastCpuTimes = current;
+    if (totalDiff === 0) return resolve(0);
+    const percent = Math.round((1 - idleDiff / totalDiff) * 100);
+    resolve(percent);
   });
 }
 
 function getMemoryUsage() {
   return new Promise((resolve) => {
-    exec('top -l 1 -n 0 | grep PhysMem', (err, stdout) => {
-      if (err || !stdout) return resolve({ percent: 0, details: 'Unknown' });
-      // PhysMem: 59G used (17G wired, 11G compressor), 4724M unused.
-      const match = stdout.match(/PhysMem:\s+([0-9.]+[GMBK])\s+used.*,\s+([0-9.]+[GMBK])\s+unused/i);
-      if (match) {
-        const used = parseSize(match[1]);
-        const unused = parseSize(match[2]);
-        const total = used + unused;
-        if (total > 0) {
-          const percent = Math.round((used / total) * 100);
-          const details = `${(used / 1024).toFixed(1)} GB / ${(total / 1024).toFixed(0)} GB used`;
-          return resolve({ percent, details });
-        }
+    exec('vm_stat', (err, stdout) => {
+      if (err || !stdout) {
+        const free = os.freemem();
+        const total = totalMemoryBytes || os.totalmem();
+        const used = total - free;
+        const percent = Math.round((used / total) * 100);
+        return resolve({ percent, details: `${(used / (1024 * 1024 * 1024)).toFixed(1)} GB / ${(total / (1024 * 1024 * 1024)).toFixed(0)} GB used` });
       }
-      resolve({ percent: 0, details: 'Unknown' });
+      
+      const pageSizeMatch = stdout.match(/page size of (\d+) bytes/);
+      const pageSize = pageSizeMatch ? parseInt(pageSizeMatch[1], 10) : 16384;
+      
+      const freeMatch = stdout.match(/Pages free:\s+(\d+)/);
+      const speculativeMatch = stdout.match(/Pages speculative:\s+(\d+)/);
+      
+      const freePages = freeMatch ? parseInt(freeMatch[1], 10) : 0;
+      const speculativePages = speculativeMatch ? parseInt(speculativeMatch[1], 10) : 0;
+      
+      const unusedPages = freePages + speculativePages;
+      const unusedBytes = unusedPages * pageSize;
+      
+      const total = totalMemoryBytes || os.totalmem();
+      const usedBytes = total - unusedBytes;
+      
+      const percent = Math.round((usedBytes / total) * 100);
+      const details = `${(usedBytes / (1024 * 1024 * 1024)).toFixed(1)} GB / ${(total / (1024 * 1024 * 1024)).toFixed(0)} GB used`;
+      
+      resolve({ percent, details });
     });
   });
 }
@@ -96,6 +179,54 @@ function getBatteryInfo() {
   });
 }
 
+// Live Media Feedback (Spotify/Apple Music via AppleScript)
+let currentMediaState = { track: 'No media playing', artist: 'Spotify / Apple Music' };
+
+function updateMediaInfo() {
+  const script = `
+    tell application "System Events"
+      set spotifyRunning to (name of processes contains "Spotify")
+      set musicRunning to (name of processes contains "Music")
+    end tell
+    if spotifyRunning then
+      tell application "Spotify"
+        if player state is playing then
+          return "SPOTIFY|||" & name of current track & "|||" & artist of current track
+        else
+          return "PAUSED"
+        end if
+      end tell
+    else if musicRunning then
+      tell application "Music"
+        if player state is playing then
+          return "MUSIC|||" & name of current track & "|||" & artist of current track
+        else
+          return "PAUSED"
+        end if
+      end tell
+    else
+      return "STOPPED"
+    end if
+  `;
+  
+  exec(`osascript -e '${script.replace(/'/g, "'\\''")}'`, (err, stdout) => {
+    if (err || !stdout) {
+      currentMediaState = { track: 'No media playing', artist: 'Spotify / Apple Music' };
+      return;
+    }
+    const val = stdout.trim();
+    if (val === 'PAUSED' || val === 'STOPPED') {
+      currentMediaState = { track: 'Player Paused', artist: 'Spotify / Apple Music' };
+    } else if (val.includes('|||')) {
+      const parts = val.split('|||');
+      currentMediaState = {
+        track: parts[1] || 'Unknown Track',
+        artist: parts[2] || 'Unknown Artist'
+      };
+    }
+  });
+}
+
 // 2. AppleScript Executor Helper
 function runAppleScript(script) {
   return new Promise((resolve, reject) => {
@@ -106,16 +237,19 @@ function runAppleScript(script) {
   });
 }
 
-// Broadcast system stats to all WS clients
+// Broadcast system stats and media info to all WS clients
 async function broadcastStats() {
   const [cpu, mem, battery] = await Promise.all([
     getCpuUsage(),
     getMemoryUsage(),
     getBatteryInfo()
   ]);
+  
+  updateMediaInfo();
+  
   const statsMessage = JSON.stringify({
     type: 'stats',
-    data: { cpu, mem, battery }
+    data: { cpu, mem, battery, media: currentMediaState }
   });
   wss.clients.forEach((client) => {
     if (client.readyState === 1 && client.isStatsSubscribed) {
@@ -153,7 +287,7 @@ let manualSelectionTime = 0;
 
 function setupActiveTranscriptWatcher(force = false) {
   try {
-    const brainDir = '/Users/phuckhangdev/.gemini/antigravity/brain';
+    const brainDir = path.join(os.homedir(), '.gemini/antigravity/brain');
     if (!fs.existsSync(brainDir)) return;
 
     const entries = fs.readdirSync(brainDir, { withFileTypes: true });
@@ -234,7 +368,20 @@ setupActiveTranscriptWatcher();
 setInterval(setupActiveTranscriptWatcher, 4000);
 
 // WebSocket Connection Handler
-wss.on('connection', (ws) => {
+wss.on('connection', (ws, req) => {
+  const parsedUrl = new URL(req.url, 'http://localhost');
+  const token = parsedUrl.searchParams.get('token');
+  
+  if (serverSettings.pinSecurityEnabled && token !== serverSettings.pin) {
+    setTimeout(() => {
+      try {
+        ws.send(JSON.stringify({ type: 'auth_failed', error: 'Unauthorized' }));
+        ws.close(4001, 'Unauthorized');
+      } catch (e) {}
+    }, 100);
+    return;
+  }
+
   console.log('Client connected from local network');
   ws.isStatsSubscribed = false;
 
@@ -362,7 +509,7 @@ wss.on('connection', (ws) => {
           break;
 
         case 'agent_submit':
-          const { prompt } = parsed;
+          const { prompt, convoId } = parsed;
           // Set agent_input.json
           fs.writeFileSync(AGENT_INPUT_PATH, JSON.stringify({
             prompt,
@@ -377,9 +524,14 @@ wss.on('connection', (ws) => {
             logs: [`[Client] Submitting prompt: "${prompt}"`]
           }, null, 2));
 
-          if (activeConvoId) {
-            console.log(`[AGENT_SUBMIT] Sending to active conversation ${activeConvoId}: "${prompt}"`);
-            const child = spawn('/Users/phuckhangdev/.gemini/antigravity/bin/agentapi', ['send-message', activeConvoId, prompt]);
+          const targetConvoId = convoId || activeConvoId;
+          const agentApiBinary = path.join(os.homedir(), '.gemini/antigravity/bin/agentapi');
+
+          if (targetConvoId) {
+            // Keep server state in sync
+            activeConvoId = targetConvoId;
+            console.log(`[AGENT_SUBMIT] Sending to target conversation ${targetConvoId}: "${prompt}"`);
+            const child = spawn(agentApiBinary, ['send-message', targetConvoId, prompt]);
             
             let stderrData = '';
             child.stderr.on('data', (data) => { stderrData += data.toString(); });
@@ -403,7 +555,7 @@ wss.on('connection', (ws) => {
             });
           } else {
             console.log(`[AGENT_SUBMIT] No active conversation. Creating new conversation...`);
-            const child = spawn('/Users/phuckhangdev/.gemini/antigravity/bin/agentapi', ['new-conversation', prompt]);
+            const child = spawn(agentApiBinary, ['new-conversation', prompt]);
             
             let stderrData = '';
             child.stderr.on('data', (data) => { stderrData += data.toString(); });
@@ -489,8 +641,13 @@ async function getConversationMetadata(convoPath) {
     
     let titleFound = false;
     let projectFound = false;
+    let linesRead = 0;
     
     for await (const line of rl) {
+      linesRead++;
+      if (linesRead > 50) {
+        break;
+      }
       if (!line.trim()) continue;
       try {
         const parsed = JSON.parse(line);
@@ -552,10 +709,82 @@ async function getConversationMetadata(convoPath) {
   return metadata;
 }
 
-// REST API Endpoints for Workspace Monitoring
-app.get('/api/projects', async (req, res) => {
+// Auth API Endpoints
+app.post('/api/auth', (req, res) => {
+  const { pin } = req.body;
+  if (!serverSettings.pinSecurityEnabled) {
+    return res.json({ success: true, message: 'Security disabled' });
+  }
+  if (pin === serverSettings.pin) {
+    return res.json({ success: true });
+  }
+  res.status(401).json({ error: 'Invalid PIN' });
+});
+
+app.get('/api/settings', verifyAuth, (req, res) => {
+  res.json({
+    pinSecurityEnabled: serverSettings.pinSecurityEnabled,
+    pin: serverSettings.pin
+  });
+});
+
+app.post('/api/settings', verifyAuth, (req, res) => {
+  const { pinSecurityEnabled, pin } = req.body;
+  if (pinSecurityEnabled && (!pin || !/^\d{6}$/.test(pin))) {
+    return res.status(400).json({ error: 'PIN must be exactly 6 digits' });
+  }
+  
+  serverSettings.pinSecurityEnabled = !!pinSecurityEnabled;
+  if (pin) {
+    serverSettings.pin = pin;
+  }
+  
   try {
-    const parentDir = '/Users/phuckhangdev/Documents/antigravity';
+    fs.writeFileSync(SETTINGS_PATH, JSON.stringify(serverSettings, null, 2));
+    res.json({ success: true, settings: serverSettings });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to save settings' });
+  }
+});
+
+app.get('/api/health', async (req, res) => {
+  try {
+    let model = 'Unknown';
+    if (fs.existsSync(MODEL_CONFIG_PATH)) {
+      try {
+        const configData = JSON.parse(fs.readFileSync(MODEL_CONFIG_PATH, 'utf8'));
+        model = configData.selectedModel || 'Unknown';
+      } catch (e) {}
+    }
+    
+    let agentStatus = 'idle';
+    let agentStep = 'Ready';
+    if (fs.existsSync(AGENT_STATUS_PATH)) {
+      try {
+        const statusData = JSON.parse(fs.readFileSync(AGENT_STATUS_PATH, 'utf8'));
+        agentStatus = statusData.status || 'idle';
+        agentStep = statusData.current_step || 'Ready';
+      } catch (e) {}
+    }
+    
+    res.json({
+      status: 'ok',
+      model,
+      agentStatus,
+      agentStep,
+      pinSecurityEnabled: serverSettings.pinSecurityEnabled,
+      pin: serverSettings.pinSecurityEnabled ? serverSettings.pin : 'DISABLED'
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+
+// REST API Endpoints for Workspace Monitoring
+app.get('/api/projects', verifyAuth, async (req, res) => {
+  try {
+    const parentDir = path.join(os.homedir(), 'Documents/antigravity');
     const entries = await fs.promises.readdir(parentDir, { withFileTypes: true });
     const projects = [];
     
@@ -590,9 +819,9 @@ app.get('/api/projects', async (req, res) => {
   }
 });
 
-app.get('/api/conversations', async (req, res) => {
+app.get('/api/conversations', verifyAuth, async (req, res) => {
   try {
-    const brainDir = '/Users/phuckhangdev/.gemini/antigravity/brain';
+    const brainDir = path.join(os.homedir(), '.gemini/antigravity/brain');
     if (!fs.existsSync(brainDir)) {
       return res.json([]);
     }
@@ -641,15 +870,19 @@ app.get('/api/conversations', async (req, res) => {
 });
 
 // GET /api/conversations/active - Find the active conversation (most recently modified log)
-app.get('/api/conversations/active', async (req, res) => {
+app.get('/api/conversations/active', verifyAuth, async (req, res) => {
   try {
-    const brainDir = '/Users/phuckhangdev/.gemini/antigravity/brain';
+    if (activeConvoId) {
+      return res.json({ id: activeConvoId });
+    }
+
+    const brainDir = path.join(os.homedir(), '.gemini/antigravity/brain');
     if (!fs.existsSync(brainDir)) {
       return res.status(404).json({ error: 'Brain directory not found' });
     }
     
     const entries = await fs.promises.readdir(brainDir, { withFileTypes: true });
-    let activeConvoId = null;
+    let latestId = null;
     let maxMtime = 0;
     
     for (const entry of entries) {
@@ -661,16 +894,17 @@ app.get('/api/conversations/active', async (req, res) => {
           const stat = await fs.promises.stat(transcriptPath);
           if (stat.mtimeMs > maxMtime) {
             maxMtime = stat.mtimeMs;
-            activeConvoId = entry.name;
+            latestId = entry.name;
           }
         }
       }
     }
     
-    if (!activeConvoId) {
+    if (!latestId) {
       return res.status(404).json({ error: 'No active conversation found' });
     }
     
+    activeConvoId = latestId;
     res.json({ id: activeConvoId });
   } catch (error) {
     console.error('Error finding active conversation:', error);
@@ -679,7 +913,7 @@ app.get('/api/conversations/active', async (req, res) => {
 });
 
 // POST /api/conversations/active - Manually activate a conversation
-app.post('/api/conversations/active', (req, res) => {
+app.post('/api/conversations/active', verifyAuth, (req, res) => {
   try {
     const { id } = req.body;
     if (!id) {
@@ -688,7 +922,7 @@ app.post('/api/conversations/active', (req, res) => {
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
       return res.status(400).json({ error: 'Invalid conversation ID format' });
     }
-    const brainDir = '/Users/phuckhangdev/.gemini/antigravity/brain';
+    const brainDir = path.join(os.homedir(), '.gemini/antigravity/brain');
     const transcriptPath = path.join(brainDir, id, '.system_generated', 'logs', 'transcript.jsonl');
     if (!fs.existsSync(transcriptPath)) {
       return res.status(404).json({ error: 'Conversation not found' });
@@ -708,7 +942,7 @@ app.post('/api/conversations/active', (req, res) => {
 // Helper to extract the selected model from the active transcript
 async function detectActiveModel(convoId) {
   try {
-    const brainDir = '/Users/phuckhangdev/.gemini/antigravity/brain';
+    const brainDir = path.join(os.homedir(), '.gemini/antigravity/brain');
     const transcriptPath = path.join(brainDir, convoId, '.system_generated', 'logs', 'transcript.jsonl');
     if (!fs.existsSync(transcriptPath)) return null;
 
@@ -739,7 +973,7 @@ async function detectActiveModel(convoId) {
   }
 }
 
-app.get('/api/conversations/:id', async (req, res) => {
+app.get('/api/conversations/:id', verifyAuth, async (req, res) => {
   try {
     const convoId = req.params.id;
     // Simple verification for UUID to avoid directory traversal
@@ -747,7 +981,7 @@ app.get('/api/conversations/:id', async (req, res) => {
       return res.status(400).json({ error: 'Invalid conversation ID format' });
     }
     
-    const brainDir = '/Users/phuckhangdev/.gemini/antigravity/brain';
+    const brainDir = path.join(os.homedir(), '.gemini/antigravity/brain');
     const transcriptPath = path.join(brainDir, convoId, '.system_generated', 'logs', 'transcript.jsonl');
     
     if (!fs.existsSync(transcriptPath)) {
@@ -828,6 +1062,25 @@ app.get('/api/conversations/:id', async (req, res) => {
             text: content.trim(),
             time: parsed.created_at || new Date().toISOString()
           });
+        } else if (parsed.type === 'SYSTEM_MESSAGE') {
+          const content = parsed.content || '';
+          if (content.includes('<SYSTEM_MESSAGE>')) {
+            const senderMatch = content.match(/sender=([^\s]+)/);
+            const contentMatch = content.match(/content=([\s\S]*?)(?:\r?\n<\/SYSTEM_MESSAGE>|$)/);
+            if (senderMatch && contentMatch) {
+              const sender = senderMatch[1];
+              const text = contentMatch[1].trim();
+              
+              // Only treat it as user message if the sender matches the conversation ID exactly (no task suffix)
+              if (sender === convoId) {
+                steps.push({
+                  sender: 'user',
+                  text: text,
+                  time: parsed.created_at || new Date().toISOString()
+                });
+              }
+            }
+          }
         }
       } catch (e) {}
     }
@@ -888,7 +1141,7 @@ if (!fs.existsSync(MODEL_CONFIG_PATH)) {
 }
 
 // GET /api/model/config - Get current selected model and all available models
-app.get('/api/model/config', async (req, res) => {
+app.get('/api/model/config', verifyAuth, async (req, res) => {
   try {
     const data = JSON.parse(fs.readFileSync(MODEL_CONFIG_PATH, 'utf8'));
     
@@ -912,7 +1165,7 @@ app.get('/api/model/config', async (req, res) => {
 
 
 // POST /api/model/select - Change the selected model
-app.post('/api/model/select', (req, res) => {
+app.post('/api/model/select', verifyAuth, (req, res) => {
   try {
     const { model } = req.body;
     if (!model) {
