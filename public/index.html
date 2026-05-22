@@ -11,6 +11,15 @@
   <link rel="stylesheet" href="app.css">
   <!-- Lucide Icons for premium feel -->
   <script src="https://unpkg.com/lucide@latest"></script>
+  <!-- Highlight.js for beautiful code blocks -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <!-- PWA meta tags -->
+  <link rel="manifest" href="/manifest.json">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Antigravity">
+  <link rel="apple-touch-icon" href="/icon-192.png">
 </head>
 <body>
   <!-- Ambient background glow spheres -->
@@ -99,7 +108,7 @@
         </div>
 
         <div class="glass-card">
-          <h2><i data-lucide="shield-check"></i> Security Settings</h2>
+          <h2><i data-lucide="shield-check"></i> Security & Remote Connection</h2>
           <div class="security-settings-form">
             <div class="settings-row">
               <label for="pin-toggle">Enable PIN Security</label>
@@ -112,9 +121,51 @@
               <label for="settings-pin">6-Digit PIN</label>
               <input type="password" id="settings-pin" class="settings-pin-field" maxlength="6" pattern="[0-9]*" inputmode="numeric" placeholder="••••••">
             </div>
-            <button class="btn-primary" id="btn-save-settings" onclick="saveSecuritySettings()">
+            <button class="btn-primary" id="btn-save-settings" onclick="saveSecuritySettings()" style="margin-bottom: 15px; width: 100%;">
               <i data-lucide="save"></i> Save Settings
             </button>
+            
+            <div class="settings-divider"></div>
+            
+            <h3 style="margin-top: 15px; margin-bottom: 10px; font-size: 1.1rem; display: flex; align-items: center; gap: 6px; color: var(--accent-purple);">
+              <i data-lucide="globe" style="width: 16px; height: 16px;"></i> Remote Access Tunnel
+            </h3>
+            <div class="tunnel-controls">
+              <div class="settings-row">
+                <span>Tunnel Status</span>
+                <span class="status-badge stopped" id="tunnel-status">Stopped</span>
+              </div>
+              <div class="settings-row hidden" id="tunnel-url-container" style="flex-direction: column; align-items: flex-start; gap: 4px;">
+                <span>Public URL</span>
+                <a href="#" target="_blank" class="tunnel-link" id="tunnel-url" style="color: var(--accent-purple); word-break: break-all; font-family: monospace; font-size: 0.9rem;">None</a>
+              </div>
+              <div style="display: flex; gap: 10px; margin-top: 10px; width: 100%;">
+                <button class="btn-primary" id="btn-start-tunnel" onclick="startRemoteTunnel()" style="flex: 1;">
+                  <i data-lucide="play" style="width: 14px; height: 14px; margin-right: 4px;"></i> Start
+                </button>
+                <button class="btn-secondary" id="btn-stop-tunnel" onclick="stopRemoteTunnel()" disabled style="flex: 1;">
+                  <i data-lucide="square" style="width: 14px; height: 14px; margin-right: 4px;"></i> Stop
+                </button>
+              </div>
+            </div>
+            
+            <div class="settings-divider"></div>
+            
+            <h3 style="margin-top: 15px; margin-bottom: 10px; font-size: 1.1rem; display: flex; align-items: center; gap: 6px; color: var(--accent-purple);">
+              <i data-lucide="qr-code" style="width: 16px; height: 16px;"></i> Scan to Connect
+            </h3>
+            <div class="qr-container" style="display: flex; flex-direction: column; align-items: center; margin-top: 10px; width: 100%;">
+              <div class="qr-placeholder" id="qr-code-placeholder" style="text-align: center; font-size: 0.85rem; color: var(--text-dim); padding: 15px 0;">
+                <p style="margin-bottom: 10px;">Click below to load connection QR code (uses Tunnel or local network)</p>
+                <button class="btn-secondary" onclick="loadQRCode()" style="padding: 6px 12px; font-size: 0.85rem;">
+                  <i data-lucide="refresh-cw" style="width: 12px; height: 12px; margin-right: 4px;"></i> Generate QR Code
+                </button>
+              </div>
+              <div class="qr-svg-wrapper hidden" id="qr-code-wrapper" style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); padding: 12px; border-radius: 12px; display: flex; justify-content: center; width: 180px; height: 180px;">
+                <!-- QR Code SVG injected here -->
+              </div>
+            </div>
+            
             <p class="settings-status-msg" id="settings-status-msg"></p>
           </div>
         </div>

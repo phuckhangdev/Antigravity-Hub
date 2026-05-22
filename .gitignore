@@ -5,3 +5,4 @@ model_config.json
 .DS_Store
 antigravity-menu-bar
 server_settings.json
+certs/

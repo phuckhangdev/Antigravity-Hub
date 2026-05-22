@@ -464,6 +464,93 @@ function selectQuestionOption(optionText) {
   }
 }
 
+function sanitizeHTML(str) {
+  if (!str) return '';
+  return str.replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#x27;')
+            .replace(/\//g, '&#x2F;');
+}
+
+// Render simple markdown tags with syntax highlights support
+function renderMarkdown(text) {
+  if (!text) return '';
+  
+  // Escape HTML to prevent XSS
+  let html = sanitizeHTML(text);
+  
+  // Convert Code blocks first so we don't apply other markdown rules inside code
+  const codeBlocks = [];
+  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (match, lang, code) => {
+    const placeholder = `__CODE_BLOCK_PLACEHOLDER_${codeBlocks.length}__`;
+    codeBlocks.push({ lang, code });
+    return placeholder;
+  });
+  
+  // Inline code
+  const inlineCodes = [];
+  html = html.replace(/`([^`\n]+)`/g, (match, code) => {
+    const placeholder = `__INLINE_CODE_PLACEHOLDER_${inlineCodes.length}__`;
+    inlineCodes.push(code);
+    return placeholder;
+  });
+  
+  // Bold
+  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/__([^_]+)__/g, '<strong>$1</strong>');
+  
+  // Italic
+  html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+  html = html.replace(/_([^_]+)_/g, '<em>$1</em>');
+  
+  // Links
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+  
+  // Convert newlines to paragraphs and breaks
+  let formattedHtml = '';
+  const paragraphs = html.split(/\n\n+/);
+  paragraphs.forEach(para => {
+    if (para.trim()) {
+      // Check if paragraph is a list
+      const lines = para.split('\n');
+      let isList = false;
+      let listHtml = '<ul>';
+      lines.forEach(line => {
+        const listMatch = line.match(/^(\s*)[-*]\s+(.*)/);
+        if (listMatch) {
+          isList = true;
+          listHtml += `<li>${listMatch[2]}</li>`;
+        }
+      });
+      listHtml += '</ul>';
+      
+      if (isList) {
+        formattedHtml += listHtml;
+      } else {
+        // Replace single newline with <br>
+        const paraWithBreaks = para.replace(/\n/g, '<br>');
+        formattedHtml += `<p>${paraWithBreaks}</p>`;
+      }
+    }
+  });
+  
+  // Restore inline codes
+  inlineCodes.forEach((code, idx) => {
+    formattedHtml = formattedHtml.replace(`__INLINE_CODE_PLACEHOLDER_${idx}__`, `<code>${code}</code>`);
+  });
+  
+  // Restore code blocks with Highlight.js-ready markup
+  codeBlocks.forEach((item, idx) => {
+    const languageClass = item.lang ? ` class="language-${item.lang}"` : '';
+    formattedHtml = formattedHtml.replace(`__CODE_BLOCK_PLACEHOLDER_${idx}__`, 
+      `<pre><code${languageClass}>${item.code}</code></pre>`);
+  });
+  
+  return formattedHtml;
+}
+
 // Helper to create chat bubble element based on sender and content
 function createChatBubbleElement(step) {
   const bubble = document.createElement('div');
@@ -477,7 +564,8 @@ function createChatBubbleElement(step) {
       optionsHtml = `<div class="question-options">`;
       step.options.forEach((opt, idx) => {
         const isRec = opt.startsWith('(Recommended)');
-        const cleanOpt = isRec ? opt.replace('(Recommended)', '').trim() : opt;
+        const rawOpt = isRec ? opt.replace('(Recommended)', '').trim() : opt;
+        const cleanOpt = sanitizeHTML(rawOpt);
         optionsHtml += `
           <div class="question-option ${isRec ? 'recommended' : ''}" onclick="selectQuestionOption('${cleanOpt.replace(/'/g, "\\'")}')">
             <span class="option-idx">${idx + 1}</span>
@@ -489,19 +577,20 @@ function createChatBubbleElement(step) {
       optionsHtml += `</div>`;
     }
     
+    const cleanQuestion = sanitizeHTML(step.question || '').replace(/\n/g, '<br>');
     bubble.innerHTML = `
       <div class="question-header">
         <i data-lucide="help-circle" style="width:14px;height:14px;margin-right:4px;display:inline-block;vertical-align:middle;"></i>
         CLARIFYING QUESTION
       </div>
-      <div class="question-text">${step.question.replace(/\n/g, '<br>')}</div>
+      <div class="question-text">${cleanQuestion}</div>
       ${optionsHtml}
       <span class="chat-bubble-time">${timeStr}</span>
     `;
   } else if (step.sender === 'user-answer') {
     bubble.className = 'chat-bubble answer-card';
     
-    let cleanText = (step.text || '')
+    let cleanText = sanitizeHTML(step.text || '')
       .replace(/\n\n/g, '</p><p>')
       .replace(/\n/g, '<br>');
       
@@ -513,14 +602,61 @@ function createChatBubbleElement(step) {
       <p>${cleanText}</p>
       <span class="chat-bubble-time">${timeStr}</span>
     `;
+  } else if (step.sender === 'agent-thinking') {
+    bubble.className = 'chat-bubble agent-thinking-card expanded';
+    bubble.innerHTML = `
+      <div class="thinking-header" onclick="this.parentElement.classList.toggle('expanded')">
+        <i data-lucide="brain-circuit" style="width:14px;height:14px;margin-right:4px;"></i>
+        <span>Thinking Process</span>
+        <i data-lucide="chevron-down" class="chevron-icon" style="width:14px;height:14px;margin-left:auto;"></i>
+      </div>
+      <div class="thinking-content">
+        ${renderMarkdown(step.text)}
+      </div>
+      <span class="chat-bubble-time">${timeStr}</span>
+    `;
+  } else if (step.sender === 'tool-call') {
+    bubble.className = 'chat-bubble tool-call-card expanded';
+    
+    let argsStr = '';
+    try {
+      const parsedArgs = (typeof step.args === 'string') ? JSON.parse(step.args) : step.args;
+      argsStr = JSON.stringify(parsedArgs, null, 2);
+    } catch (e) {
+      argsStr = String(step.args);
+    }
+    
+    bubble.innerHTML = `
+      <div class="tool-header" onclick="this.parentElement.classList.toggle('expanded')">
+        <i data-lucide="wrench" style="width:14px;height:14px;margin-right:4px;"></i>
+        <span>Call: <strong>${step.toolName}</strong></span>
+        <i data-lucide="chevron-down" class="chevron-icon" style="width:14px;height:14px;margin-left:auto;"></i>
+      </div>
+      <div class="tool-args">
+        <pre><code class="language-json">${sanitizeHTML(argsStr)}</code></pre>
+      </div>
+      <span class="chat-bubble-time">${timeStr}</span>
+    `;
+  } else if (step.sender === 'tool-execution') {
+    bubble.className = `chat-bubble tool-execution-card ${step.status.toLowerCase()}`;
+    const icon = step.status === 'ERROR' ? 'alert-triangle' : 'terminal';
+    
+    bubble.innerHTML = `
+      <div class="tool-header" onclick="this.parentElement.classList.toggle('expanded')">
+        <i data-lucide="${icon}" style="width:14px;height:14px;margin-right:4px;"></i>
+        <span>Result: <strong>${step.toolName}</strong></span>
+        <span class="status-indicator ${step.status.toLowerCase()}">${step.status}</span>
+        <i data-lucide="chevron-down" class="chevron-icon" style="width:14px;height:14px;margin-left:auto;"></i>
+      </div>
+      <div class="tool-output">
+        <pre><code>${sanitizeHTML(step.text || '')}</code></pre>
+      </div>
+      <span class="chat-bubble-time">${timeStr}</span>
+    `;
   } else {
     bubble.className = `chat-bubble ${step.sender}`;
-    let cleanText = (step.text || '')
-      .replace(/\n\n/g, '</p><p>')
-      .replace(/\n/g, '<br>');
-      
     bubble.innerHTML = `
-      <p>${cleanText}</p>
+      ${renderMarkdown(step.text)}
       <span class="chat-bubble-time">${timeStr}</span>
     `;
   }
@@ -572,6 +708,13 @@ async function refreshActiveChat(forceConvoId = null) {
     // Initialize newly added icons
     if (window.lucide) {
       window.lucide.createIcons();
+    }
+
+    // Highlight code blocks
+    if (window.hljs) {
+      chatHistory.querySelectorAll('pre code').forEach((el) => {
+        window.hljs.highlightElement(el);
+      });
     }
 
     if (wasScrolledToBottom || forceConvoId === null) {
@@ -857,6 +1000,13 @@ async function openConversation(id, title) {
       window.lucide.createIcons();
     }
     
+    // Highlight code blocks
+    if (window.hljs) {
+      overlayBody.querySelectorAll('pre code').forEach((el) => {
+        window.hljs.highlightElement(el);
+      });
+    }
+    
     overlayBody.scrollTop = overlayBody.scrollHeight;
   } catch (e) {
     overlayBody.innerHTML = `<div class="loading-spinner" style="color:var(--accent-red)">Error loading transcript: ${e.message}</div>`;
@@ -988,3 +1138,185 @@ async function saveSecuritySettings() {
     btn.disabled = false;
   }
 }
+
+// 6a. Cloudflare Tunnel & QR Connect State management
+async function checkTunnelStatus() {
+  const tunnelStatusBadge = document.getElementById('tunnel-status');
+  const tunnelUrlContainer = document.getElementById('tunnel-url-container');
+  const tunnelUrlLink = document.getElementById('tunnel-url');
+  const btnStart = document.getElementById('btn-start-tunnel');
+  const btnStop = document.getElementById('btn-stop-tunnel');
+  
+  if (!tunnelStatusBadge) return;
+  
+  try {
+    const res = await authFetch('/api/tunnel/status');
+    if (res.ok) {
+      const data = await res.json();
+      
+      // Update UI
+      tunnelStatusBadge.textContent = data.status.toUpperCase();
+      tunnelStatusBadge.className = `status-badge ${data.status}`;
+      
+      if (data.status === 'running' && data.url) {
+        tunnelUrlContainer.classList.remove('hidden');
+        tunnelUrlLink.href = data.url;
+        tunnelUrlLink.textContent = data.url;
+        if (btnStart) btnStart.disabled = true;
+        if (btnStop) btnStop.disabled = false;
+      } else if (data.status === 'starting') {
+        tunnelStatusBadge.textContent = 'STARTING...';
+        tunnelUrlContainer.classList.add('hidden');
+        if (btnStart) btnStart.disabled = true;
+        if (btnStop) btnStop.disabled = false;
+      } else {
+        tunnelUrlContainer.classList.add('hidden');
+        if (btnStart) btnStart.disabled = false;
+        if (btnStop) btnStop.disabled = true;
+      }
+    }
+  } catch (e) {
+    console.error('Error checking tunnel status:', e);
+  }
+}
+
+// Check tunnel status every 5 seconds
+setInterval(checkTunnelStatus, 5000);
+
+// Run on page load
+document.addEventListener('DOMContentLoaded', () => {
+  setTimeout(checkTunnelStatus, 1000);
+});
+
+async function startRemoteTunnel() {
+  const statusMsg = document.getElementById('settings-status-msg');
+  const btnStart = document.getElementById('btn-start-tunnel');
+  const tunnelStatusBadge = document.getElementById('tunnel-status');
+  
+  if (!statusMsg || !btnStart) return;
+  
+  btnStart.disabled = true;
+  statusMsg.textContent = 'Starting tunnel daemon...';
+  statusMsg.className = 'settings-status-msg';
+  
+  if (tunnelStatusBadge) {
+    tunnelStatusBadge.textContent = 'STARTING...';
+    tunnelStatusBadge.className = 'status-badge starting';
+  }
+  
+  try {
+    const res = await authFetch('/api/tunnel/start', { method: 'POST' });
+    if (res.ok) {
+      statusMsg.textContent = 'Tunnel started successfully!';
+      statusMsg.className = 'settings-status-msg success';
+      await checkTunnelStatus();
+      loadQRCode(); // Auto-load QR code when tunnel starts
+    } else {
+      const err = await res.json();
+      statusMsg.textContent = err.error || 'Failed to start tunnel';
+      statusMsg.className = 'settings-status-msg error';
+      await checkTunnelStatus();
+    }
+  } catch (err) {
+    statusMsg.textContent = 'Network error starting tunnel';
+    statusMsg.className = 'settings-status-msg error';
+    await checkTunnelStatus();
+  }
+  
+  setTimeout(() => {
+    statusMsg.textContent = '';
+  }, 4000);
+}
+
+async function stopRemoteTunnel() {
+  const statusMsg = document.getElementById('settings-status-msg');
+  const btnStop = document.getElementById('btn-stop-tunnel');
+  
+  if (!statusMsg || !btnStop) return;
+  
+  btnStop.disabled = true;
+  statusMsg.textContent = 'Stopping tunnel...';
+  statusMsg.className = 'settings-status-msg';
+  
+  try {
+    const res = await authFetch('/api/tunnel/stop', { method: 'POST' });
+    if (res.ok) {
+      statusMsg.textContent = 'Tunnel stopped';
+      statusMsg.className = 'settings-status-msg success';
+      await checkTunnelStatus();
+      
+      // Hide QR code wrapper and show placeholder
+      document.getElementById('qr-code-wrapper').classList.add('hidden');
+      const placeholder = document.getElementById('qr-code-placeholder');
+      if (placeholder) {
+        placeholder.classList.remove('hidden');
+        placeholder.innerHTML = `
+          <p style="margin-bottom: 10px;">Click below to load connection QR code (uses Tunnel or local network)</p>
+          <button class="btn-secondary" onclick="loadQRCode()" style="padding: 6px 12px; font-size: 0.85rem;">
+            Generate QR Code
+          </button>
+        `;
+      }
+    } else {
+      statusMsg.textContent = 'Failed to stop tunnel';
+      statusMsg.className = 'settings-status-msg error';
+      await checkTunnelStatus();
+    }
+  } catch (err) {
+    statusMsg.textContent = 'Network error stopping tunnel';
+    statusMsg.className = 'settings-status-msg error';
+    await checkTunnelStatus();
+  }
+  
+  setTimeout(() => {
+    statusMsg.textContent = '';
+  }, 4000);
+}
+
+async function loadQRCode() {
+  const placeholder = document.getElementById('qr-code-placeholder');
+  const wrapper = document.getElementById('qr-code-wrapper');
+  
+  if (!placeholder || !wrapper) return;
+  
+  placeholder.innerHTML = '<p>Generating QR Code...</p>';
+  
+  try {
+    // Fetch QR SVG from endpoint
+    const res = await authFetch('/api/qrcode');
+    if (res.ok) {
+      const svgText = await res.text();
+      wrapper.innerHTML = svgText;
+      placeholder.classList.add('hidden');
+      wrapper.classList.remove('hidden');
+    } else {
+      placeholder.innerHTML = `
+        <p style="color:var(--accent-red)">Failed to generate QR Code</p>
+        <button class="btn-secondary" onclick="loadQRCode()" style="margin-top: 10px; padding: 6px 12px; font-size: 0.85rem;">
+          Retry
+        </button>
+      `;
+    }
+  } catch (err) {
+    placeholder.innerHTML = `
+      <p style="color:var(--accent-red)">Network error generating QR</p>
+      <button class="btn-secondary" onclick="loadQRCode()" style="margin-top: 10px; padding: 6px 12px; font-size: 0.85rem;">
+        Retry
+      </button>
+    `;
+  }
+}
+
+// Register service worker for PWA support
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js')
+      .then(reg => {
+        console.log('[Service Worker] Registered successfully with scope:', reg.scope);
+      })
+      .catch(err => {
+        console.error('[Service Worker] Registration failed:', err);
+      });
+  });
+}
+

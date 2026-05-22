@@ -1,0 +1,21 @@
+{
+  "name": "Antigravity Hub",
+  "short_name": "Antigravity",
+  "description": "Antigravity Companion Hub - macOS Remote & AI Agent Monitor",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#06070d",
+  "theme_color": "#06070d",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "type": "image/png",
+      "sizes": "192x192"
+    },
+    {
+      "src": "/icon-512.png",
+      "type": "image/png",
+      "sizes": "512x512"
+    }
+  ]
+}

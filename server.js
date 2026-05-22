@@ -1,5 +1,6 @@
 import express from 'express';
 import { createServer } from 'http';
+import https from 'https';
 import { WebSocketServer } from 'ws';
 import { exec, spawn } from 'child_process';
 import path from 'path';
@@ -7,18 +8,104 @@ import { fileURLToPath } from 'url';
 import fs from 'fs';
 import readline from 'readline';
 import os from 'os';
+import crypto from 'crypto';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
+import { generate } from 'selfsigned';
+import QRCode from 'qrcode';
+import { startTunnel, stopTunnel, getTunnelStatus } from './tunnel.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
 const server = createServer(app);
-const wss = new WebSocketServer({ server });
+
+// HTTPS Server configuration
+const CERTS_DIR = path.join(__dirname, 'certs');
+function ensureSSLCerts() {
+  if (!fs.existsSync(CERTS_DIR)) fs.mkdirSync(CERTS_DIR);
+  const keyPath = path.join(CERTS_DIR, 'server.key');
+  const certPath = path.join(CERTS_DIR, 'server.cert');
+  
+  if (!fs.existsSync(keyPath) || !fs.existsSync(certPath)) {
+    const attrs = [{ name: 'commonName', value: 'Antigravity Hub' }];
+    const pems = generate(attrs, {
+      days: 365,
+      keySize: 2048,
+      algorithm: 'sha256',
+      extensions: [{ name: 'subjectAltName', altNames: [
+        { type: 2, value: 'localhost' },
+        { type: 7, ip: '127.0.0.1' }
+      ]}]
+    });
+    fs.writeFileSync(keyPath, pems.private);
+    fs.writeFileSync(certPath, pems.cert);
+    console.log('🔐 SSL certificates generated');
+  }
+  return { key: fs.readFileSync(keyPath), cert: fs.readFileSync(certPath) };
+}
+
+let ssl = null;
+try {
+  ssl = ensureSSLCerts();
+} catch (e) {
+  console.error('Failed to generate/read SSL certificates:', e);
+}
+
+const httpsServer = ssl ? https.createServer(ssl, app) : null;
+const wss = new WebSocketServer({ noServer: true });
+
+// Handle WebSocket upgrade manually on both HTTP and HTTPS servers
+server.on('upgrade', (request, socket, head) => {
+  wss.handleUpgrade(request, socket, head, (ws) => {
+    wss.emit('connection', ws, request);
+  });
+});
+
+if (httpsServer) {
+  httpsServer.on('upgrade', (request, socket, head) => {
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      wss.emit('connection', ws, request);
+    });
+  });
+}
 
 const PORT = process.env.PORT || 3000;
 
+// Security Headers
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'", "https://unpkg.com", "https://cdnjs.cloudflare.com"],
+      styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com", "https://cdnjs.cloudflare.com"],
+      fontSrc: ["'self'", "https://fonts.gstatic.com"],
+      imgSrc: ["'self'", "data:", "blob:"],
+      connectSrc: ["'self'", "wss:", "ws:"],
+    },
+  },
+}));
+
+// HTTP to HTTPS Redirect middleware
+app.use((req, res, next) => {
+  // If connection is not secure, and it's not a local health check, redirect
+  if (!req.secure && req.headers['x-forwarded-proto'] !== 'https') {
+    const host = req.headers.host || '';
+    const cleanHost = host.split(':')[0];
+    
+    // We only redirect if we have a valid HTTPS server running
+    if (httpsServer) {
+      const httpsPort = parseInt(PORT) + 1;
+      const httpsUrl = `https://${cleanHost}:${httpsPort}${req.url}`;
+      return res.redirect(307, httpsUrl);
+    }
+  }
+  next();
+});
+
 app.use(express.static(path.join(__dirname, 'public')));
-app.use(express.json());
+app.use(express.json({ limit: '1mb' }));
 
 // 0. Security PIN Configuration
 const SETTINGS_PATH = path.join(__dirname, 'server_settings.json');
@@ -26,7 +113,7 @@ let serverSettings = { pinSecurityEnabled: true, pin: '' };
 
 function loadSettings() {
   if (!fs.existsSync(SETTINGS_PATH)) {
-    const generatedPin = Math.floor(100000 + Math.random() * 900000).toString();
+    const generatedPin = crypto.randomInt(100000, 1000000).toString();
     serverSettings = {
       pinSecurityEnabled: true,
       pin: generatedPin
@@ -43,7 +130,7 @@ function loadSettings() {
       console.log(`🔑 SECURITY PIN ACTIVE: ${serverSettings.pinSecurityEnabled ? serverSettings.pin : 'DISABLED'}`);
       console.log(`====================================================\n`);
     } catch (e) {
-      const generatedPin = Math.floor(100000 + Math.random() * 900000).toString();
+      const generatedPin = crypto.randomInt(100000, 1000000).toString();
       serverSettings = { pinSecurityEnabled: true, pin: generatedPin };
       fs.writeFileSync(SETTINGS_PATH, JSON.stringify(serverSettings, null, 2));
     }
@@ -709,8 +796,16 @@ async function getConversationMetadata(convoPath) {
   return metadata;
 }
 
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 10, // Max 10 attempts
+  message: { error: 'Too many login attempts. Try again in 15 minutes.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 // Auth API Endpoints
-app.post('/api/auth', (req, res) => {
+app.post('/api/auth', authLimiter, (req, res) => {
   const { pin } = req.body;
   if (!serverSettings.pinSecurityEnabled) {
     return res.json({ success: true, message: 'Security disabled' });
@@ -747,7 +842,20 @@ app.post('/api/settings', verifyAuth, (req, res) => {
   }
 });
 
-app.get('/api/health', async (req, res) => {
+// Minimal unauthenticated ping endpoint for basic connection check
+app.get('/api/ping', (req, res) => {
+  res.json({ status: 'ok' });
+});
+
+app.get('/api/health', (req, res, next) => {
+  // Allow localhost to bypass PIN check for Menu Bar app integration
+  const remoteIp = req.ip || req.socket.remoteAddress;
+  const isLocalhost = remoteIp === '127.0.0.1' || remoteIp === '::1' || remoteIp === '::ffff:127.0.0.1';
+  if (isLocalhost) {
+    return next();
+  }
+  return verifyAuth(req, res, next);
+}, async (req, res) => {
   try {
     let model = 'Unknown';
     if (fs.existsSync(MODEL_CONFIG_PATH)) {
@@ -773,44 +881,201 @@ app.get('/api/health', async (req, res) => {
       agentStatus,
       agentStep,
       pinSecurityEnabled: serverSettings.pinSecurityEnabled,
-      pin: serverSettings.pinSecurityEnabled ? serverSettings.pin : 'DISABLED'
+      pin: serverSettings.pinSecurityEnabled ? serverSettings.pin : 'DISABLED',
+      tunnelUrl: getTunnelStatus().url || null
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
+// Cloudflare Tunnel API Endpoints
+app.post('/api/tunnel/start', verifyAuth, async (req, res) => {
+  try {
+    const status = getTunnelStatus();
+    if (status.status === 'running') {
+      return res.json({ success: true, ...status });
+    }
+    
+    const result = await startTunnel(PORT, false);
+    
+    serverSettings.tunnelUrl = result.url;
+    fs.writeFileSync(SETTINGS_PATH, JSON.stringify(serverSettings, null, 2));
+
+    res.json({ success: true, ...result });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/tunnel/stop', verifyAuth, (req, res) => {
+  stopTunnel();
+  serverSettings.tunnelUrl = null;
+  try {
+    fs.writeFileSync(SETTINGS_PATH, JSON.stringify(serverSettings, null, 2));
+  } catch (e) {}
+  res.json({ success: true, status: 'stopped' });
+});
+
+app.get('/api/tunnel/status', verifyAuth, (req, res) => {
+  res.json(getTunnelStatus());
+});
+
+// QR Code API Endpoint
+app.get('/api/qrcode', verifyAuth, async (req, res) => {
+  try {
+    const status = getTunnelStatus();
+    let connectionUrl = '';
+    
+    if (status.status === 'running' && status.url) {
+      connectionUrl = status.url;
+    } else {
+      // Fallback to local network IP address
+      const interfaces = os.networkInterfaces();
+      let localIP = 'localhost';
+      for (const name of Object.keys(interfaces)) {
+        for (const iface of interfaces[name]) {
+          if (iface.family === 'IPv4' && !iface.internal) {
+            localIP = iface.address;
+            break;
+          }
+        }
+        if (localIP !== 'localhost') break;
+      }
+      
+      const HTTPS_PORT = parseInt(PORT) + 1;
+      connectionUrl = `https://${localIP}:${HTTPS_PORT}`;
+    }
+    
+    const fullUrl = `${connectionUrl}?token=${serverSettings.pin}`;
+    
+    const qrSvg = await QRCode.toString(fullUrl, {
+      type: 'svg',
+      margin: 2,
+      color: {
+        dark: '#bf5af2',     // Sleek purple
+        light: '#00000000'   // Transparent
+      }
+    });
+    
+    res.type('svg').send(qrSvg);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+
+// Helper to scan recent brain transcripts and extract active workspace paths
+async function discoverWorkspacesFromTranscripts() {
+  const workspaces = new Set();
+  const brainDir = path.join(os.homedir(), '.gemini/antigravity/brain');
+  if (!fs.existsSync(brainDir)) return [];
+
+  try {
+    const entries = await fs.promises.readdir(brainDir, { withFileTypes: true });
+    const convos = [];
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        const convoPath = path.join(brainDir, entry.name);
+        const transcriptPath = path.join(convoPath, '.system_generated', 'logs', 'transcript.jsonl');
+        if (fs.existsSync(transcriptPath)) {
+          const stat = await fs.promises.stat(transcriptPath);
+          convos.push({ path: transcriptPath, mtime: stat.mtimeMs });
+        }
+      }
+    }
+    
+    // Sort by mtime desc, take top 10 transcripts for scanning
+    convos.sort((a, b) => b.mtime - a.mtime);
+    const topConvos = convos.slice(0, 10);
+    
+    for (const convo of topConvos) {
+      try {
+        const content = fs.readFileSync(convo.path, 'utf8');
+        // Match absolute path patterns for macOS user directories
+        const matches = content.match(/\/Users\/[a-zA-Z0-9_\-\.\/]+/g);
+        if (matches) {
+          for (let matchedPath of matches) {
+            // Clean up trailing JSON characters/backslashes
+            matchedPath = matchedPath.replace(/\\+$/, '').replace(/["',\]\)].*$/, '');
+            
+            if (fs.existsSync(matchedPath)) {
+              const stat = fs.statSync(matchedPath);
+              if (stat.isDirectory()) {
+                // Filter out standard non-project locations
+                if (!matchedPath.includes('.gemini') && 
+                    matchedPath !== os.homedir() && 
+                    matchedPath !== path.join(os.homedir(), 'Documents')) {
+                  workspaces.add(path.normalize(matchedPath));
+                }
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Error reading transcript for workspace discovery:', err);
+      }
+    }
+  } catch (err) {
+    console.error('Error in discoverWorkspacesFromTranscripts:', err);
+  }
+  
+  return Array.from(workspaces);
+}
 
 // REST API Endpoints for Workspace Monitoring
 app.get('/api/projects', verifyAuth, async (req, res) => {
   try {
-    const parentDir = path.join(os.homedir(), 'Documents/antigravity');
-    const entries = await fs.promises.readdir(parentDir, { withFileTypes: true });
-    const projects = [];
+    const discoveredPaths = await discoverWorkspacesFromTranscripts();
     
-    for (const entry of entries) {
-      if (entry.isDirectory()) {
-        const projectPath = path.join(parentDir, entry.name);
-        const stat = await fs.promises.stat(projectPath);
-        
-        // Get git branch
-        const branch = await new Promise((resolve) => {
-          exec('git branch --show-current', { cwd: projectPath }, (err, stdout) => {
-            if (err) return resolve('');
-            resolve(stdout.trim());
-          });
-        });
-        
-        projects.push({
-          name: entry.name,
-          path: projectPath,
-          branch: branch || 'none',
-          mtime: stat.mtimeMs
-        });
+    // Add standard candidate root directories
+    const candidateDirs = [
+      path.join(os.homedir(), 'Documents/antigravity'),
+      path.join(os.homedir(), 'projects'),
+      path.join(os.homedir(), 'Developer')
+    ];
+    
+    for (const parentDir of candidateDirs) {
+      if (fs.existsSync(parentDir)) {
+        try {
+          const entries = await fs.promises.readdir(parentDir, { withFileTypes: true });
+          for (const entry of entries) {
+            if (entry.isDirectory()) {
+              discoveredPaths.push(path.join(parentDir, entry.name));
+            }
+          }
+        } catch (e) {}
       }
     }
     
-    // Sort by mtime descending
+    // Deduplicate normalized paths
+    const uniquePaths = Array.from(new Set(discoveredPaths.map(p => path.normalize(p))));
+    const projects = [];
+    
+    for (const projectPath of uniquePaths) {
+      if (fs.existsSync(projectPath)) {
+        try {
+          const stat = await fs.promises.stat(projectPath);
+          
+          // Get git branch
+          const branch = await new Promise((resolve) => {
+            exec('git branch --show-current', { cwd: projectPath }, (err, stdout) => {
+              if (err) return resolve('');
+              resolve(stdout.trim());
+            });
+          });
+          
+          projects.push({
+            name: path.basename(projectPath),
+            path: projectPath,
+            branch: branch || 'none',
+            mtime: stat.mtimeMs
+          });
+        } catch (e) {}
+      }
+    }
+    
+    // Sort by modification time (most recent first)
     projects.sort((a, b) => b.mtime - a.mtime);
     res.json(projects);
   } catch (error) {
@@ -999,6 +1264,8 @@ app.get('/api/conversations/:id', verifyAuth, async (req, res) => {
       if (!line.trim()) continue;
       try {
         const parsed = JSON.parse(line);
+        const time = parsed.created_at || new Date().toISOString();
+        
         if (parsed.source === 'USER_EXPLICIT' || parsed.type === 'USER_INPUT') {
           const content = parsed.content || '';
           let text = content;
@@ -1011,19 +1278,28 @@ app.get('/api/conversations/:id', verifyAuth, async (req, res) => {
           steps.push({
             sender: 'user',
             text: text,
-            time: parsed.created_at || new Date().toISOString()
+            time: time
           });
         } else if (parsed.source === 'MODEL' && parsed.type === 'PLANNER_RESPONSE') {
+          const hasTools = parsed.tool_calls && Array.isArray(parsed.tool_calls) && parsed.tool_calls.length > 0;
+          
           if (parsed.content && parsed.content.trim()) {
-            steps.push({
-              sender: 'agent',
-              text: parsed.content.trim(),
-              time: parsed.created_at || new Date().toISOString()
-            });
+            if (hasTools) {
+              steps.push({
+                sender: 'agent-thinking',
+                text: parsed.content.trim(),
+                time: time
+              });
+            } else {
+              steps.push({
+                sender: 'agent',
+                text: parsed.content.trim(),
+                time: time
+              });
+            }
           }
           
-          // Check for tool calls like ask_question
-          if (parsed.tool_calls && Array.isArray(parsed.tool_calls)) {
+          if (hasTools) {
             parsed.tool_calls.forEach(tc => {
               if (tc.name === 'ask_question') {
                 try {
@@ -1044,23 +1320,38 @@ app.get('/api/conversations/:id', verifyAuth, async (req, res) => {
                         question: qObj.question,
                         options: qObj.options,
                         isMultiSelect: qObj.is_multi_select,
-                        time: parsed.created_at || new Date().toISOString()
+                        time: time
                       });
                     });
                   }
                 } catch (err) {
                   console.error('Error parsing ask_question args:', err);
                 }
+              } else {
+                steps.push({
+                  sender: 'tool-call',
+                  toolName: tc.name,
+                  args: tc.args,
+                  time: time
+                });
               }
             });
           }
+        } else if (parsed.source === 'MODEL' && parsed.type !== 'PLANNER_RESPONSE') {
+          steps.push({
+            sender: 'tool-execution',
+            toolName: parsed.type,
+            status: parsed.status || 'DONE',
+            text: parsed.content || '',
+            time: time
+          });
         } else if (parsed.type === 'ASK_QUESTION') {
           // This is the user's answer to the ask_question tool
           const content = parsed.content || '';
           steps.push({
             sender: 'user-answer',
             text: content.trim(),
-            time: parsed.created_at || new Date().toISOString()
+            time: time
           });
         } else if (parsed.type === 'SYSTEM_MESSAGE') {
           const content = parsed.content || '';
@@ -1076,7 +1367,7 @@ app.get('/api/conversations/:id', verifyAuth, async (req, res) => {
                 steps.push({
                   sender: 'user',
                   text: text,
-                  time: parsed.created_at || new Date().toISOString()
+                  time: time
                 });
               }
             }
@@ -1190,19 +1481,27 @@ app.post('/api/model/select', verifyAuth, (req, res) => {
 // Start HTTP/WS server
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`====================================================`);
-  console.log(`Server is running locally at http://localhost:${PORT}`);
-  
-  // Find local IP addresses
-  import('os').then((os) => {
+  console.log(`🔌 HTTP Server running at http://localhost:${PORT}`);
+});
+
+if (httpsServer) {
+  const HTTPS_PORT = parseInt(PORT) + 1;
+  httpsServer.listen(HTTPS_PORT, '0.0.0.0', () => {
+    console.log(`🔒 HTTPS Server running at https://localhost:${HTTPS_PORT}`);
+    
+    // Find local IP addresses
     const interfaces = os.networkInterfaces();
     console.log(`Access remotely on your iPhone using:`);
     for (const name of Object.keys(interfaces)) {
       for (const iface of interfaces[name]) {
         if (iface.family === 'IPv4' && !iface.internal) {
-          console.log(`  👉 http://${iface.address}:${PORT}`);
+          console.log(`  👉 https://${iface.address}:${HTTPS_PORT}`);
         }
       }
     }
     console.log(`====================================================`);
   });
-});
+} else {
+  console.log(`⚠️ HTTPS server could not be started, running HTTP only.`);
+  console.log(`====================================================`);
+}
