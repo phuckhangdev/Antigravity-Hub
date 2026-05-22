@@ -1,0 +1,14 @@
+{
+  "name": "antigravity-hub",
+  "version": "1.0.0",
+  "description": "Antigravity Hub - Mac Remote Control & Antigravity 2.0 Integration",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.1",
+    "ws": "^8.18.0"
+  }
+}

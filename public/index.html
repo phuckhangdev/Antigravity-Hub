@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Antigravity Hub</title>
+  <!-- Outfit Google Font -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="app.css">
+  <!-- Lucide Icons for premium feel -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+</head>
+<body>
+  <!-- Ambient background glow spheres -->
+  <div class="bg-glow sphere-1"></div>
+  <div class="bg-glow sphere-2"></div>
+
+  <div class="app-container">
+    <header class="app-header">
+      <div class="logo-area">
+        <div class="logo-orb"></div>
+        <h1>Antigravity Hub</h1>
+      </div>
+      <div id="connection-badge" class="connection-status disconnected">
+        <span class="status-dot"></span>
+        <span class="status-text">Connecting...</span>
+      </div>
+    </header>
+
+    <!-- Main Content Panels -->
+    <main class="app-main">
+      <!-- PANEL: SYSTEM CONTROLS -->
+      <section id="panel-controls" class="tab-panel active">
+        <div class="glass-card">
+          <h2><i data-lucide="music"></i> Media Control</h2>
+          <div class="media-track-info">
+            <p class="track-title">System Player</p>
+            <p class="track-artist">Spotify / Apple Music</p>
+          </div>
+          <div class="media-controls">
+            <button class="btn-control icon-btn" id="btn-prev" onclick="sendControl('prev_track')">
+              <i data-lucide="skip-back"></i>
+            </button>
+            <button class="btn-control icon-btn play-btn" id="btn-play" onclick="sendControl('play_pause')">
+              <i data-lucide="play"></i>
+            </button>
+            <button class="btn-control icon-btn" id="btn-next" onclick="sendControl('next_track')">
+              <i data-lucide="skip-forward"></i>
+            </button>
+          </div>
+          <div class="volume-controls">
+            <button class="btn-control icon-btn sub-btn" onclick="sendControl('vol_down')">
+              <i data-lucide="volume-1"></i>
+            </button>
+            <div class="volume-bar-container">
+              <span class="volume-label">Adjust Output Volume</span>
+            </div>
+            <button class="btn-control icon-btn sub-btn" onclick="sendControl('vol_up')">
+              <i data-lucide="volume-2"></i>
+            </button>
+          </div>
+          <div class="mute-container">
+            <button class="btn-secondary" onclick="sendControl('vol_mute')">
+              <i data-lucide="volume-x"></i> Toggle Mute
+            </button>
+          </div>
+        </div>
+
+        <div class="glass-card">
+          <h2><i data-lucide="sliders"></i> System Actions</h2>
+          <div class="action-grid">
+            <button class="btn-action" onclick="sendControl('lock')">
+              <div class="action-icon lock-icon"><i data-lucide="lock"></i></div>
+              <span>Lock Screen</span>
+            </button>
+            <button class="btn-action" onclick="sendControl('sleep')">
+              <div class="action-icon sleep-icon"><i data-lucide="moon"></i></div>
+              <span>Sleep Mac</span>
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- PANEL: SYSTEM MONITOR -->
+      <section id="panel-monitor" class="tab-panel">
+        <div class="glass-card">
+          <h2><i data-lucide="cpu"></i> CPU Load</h2>
+          <div class="gauge-container">
+            <div class="gauge-ring" id="cpu-ring" style="--val: 0%">
+              <div class="gauge-inner">
+                <span class="gauge-value" id="cpu-val">0%</span>
+              </div>
+            </div>
+          </div>
+          <p class="gauge-caption">Processor activity across all cores</p>
+        </div>
+
+        <div class="glass-card">
+          <h2><i data-lucide="database"></i> System RAM</h2>
+          <div class="progress-container">
+            <div class="progress-header">
+              <span id="ram-details">0 GB / 0 GB</span>
+              <span id="ram-percent">0%</span>
+            </div>
+            <div class="progress-track">
+              <div class="progress-fill ram-fill" id="ram-fill" style="width: 0%"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="glass-card">
+          <h2><i data-lucide="battery"></i> Battery & Power</h2>
+          <div class="battery-status-container">
+            <div class="battery-icon-wrapper">
+              <div class="battery-body">
+                <div class="battery-level" id="bat-fill" style="width: 0%"></div>
+                <div class="battery-bolt" id="bat-bolt"><i data-lucide="zap"></i></div>
+              </div>
+              <div class="battery-tip"></div>
+            </div>
+            <div class="battery-text">
+              <span class="battery-pct" id="bat-pct">0%</span>
+              <span class="battery-state" id="bat-state">Loading status...</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- PANEL: REMOTE TERMINAL -->
+      <section id="panel-terminal" class="tab-panel">
+        <div class="terminal-card">
+          <div class="terminal-header">
+            <span class="terminal-dot red"></span>
+            <span class="terminal-dot yellow"></span>
+            <span class="terminal-dot green"></span>
+            <span class="terminal-title">zsh — interactive remote shell</span>
+            <button class="terminal-ctrl-btn" onclick="killTerminal()" title="Ctrl+C"><i data-lucide="x-circle"></i> Kill</button>
+          </div>
+          <div class="terminal-body" id="terminal-output">
+            Welcome to Antigravity Remote Shell. Initializing...
+          </div>
+          <div class="terminal-input-container">
+            <span class="terminal-prompt">$</span>
+            <input type="text" id="terminal-input" placeholder="Type a command and press Enter..." autocomplete="off" autocapitalize="off" spellcheck="false">
+          </div>
+        </div>
+      </section>
+
+      <!-- PANEL: ANTIGRAVITY AGENT -->
+      <section id="panel-agent" class="tab-panel">
+        <div class="agent-panel-header">
+          <div class="agent-status-banner-mini" id="agent-banner">
+            <div class="pulse-indicator" id="agent-pulse"></div>
+            <div class="banner-text">
+              <h3 id="agent-status-title">Status: Idle</h3>
+              <p id="agent-step-title">Ready for prompt</p>
+            </div>
+          </div>
+          <div class="header-selectors">
+            <div class="convo-select-container">
+              <select id="convo-selector" onchange="onConvoChange(this.value)">
+                <option value="">No Active Chat</option>
+              </select>
+            </div>
+            <div class="model-select-container">
+              <select id="model-selector" onchange="onModelChange(this.value)">
+                <option value="Gemini 3.5 Flash (High)">Gemini 3.5 Flash (High)</option>
+                <option value="Claude Opus 4.6 (Thinking)">Claude Opus 4.6 (Thinking)</option>
+                <option value="Claude Sonnet 4.6 (Thinking)">Claude Sonnet 4.6 (Thinking)</option>
+                <option value="Gemini 3.1 Pro (High)">Gemini 3.1 Pro (High)</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <!-- Chat Transcript Area -->
+        <div class="agent-chat-container">
+          <div class="agent-chat-messages" id="agent-chat-history">
+            <div class="chat-placeholder">
+              <i data-lucide="message-square" style="width: 48px; height: 48px; opacity: 0.3; margin-bottom: 12px;"></i>
+              <p>No active chat messages. Send a prompt below to start.</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Collapsible Details (Raw Logs) -->
+        <div class="agent-log-collapsible">
+          <button class="btn-toggle-logs" id="btn-toggle-logs" onclick="toggleLogs()">
+            <i data-lucide="terminal" style="width: 14px; height: 14px; margin-right: 6px;"></i>
+            <span>Show Execution Logs</span>
+            <i data-lucide="chevron-down" class="chevron-icon" id="logs-chevron" style="width: 14px; height: 14px; margin-left: auto;"></i>
+          </button>
+          <div class="agent-log-container collapsed" id="agent-logs-container">
+            <div class="log-header">
+              <span>Raw Execution Log</span>
+              <button class="log-clear-btn" onclick="clearLocalLogs()">Clear</button>
+            </div>
+            <div class="log-body" id="agent-logs">
+              <div class="log-entry system">[System] Ready to run tasks.</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Input Form with Quick Action workflows -->
+        <div class="agent-input-area">
+          <!-- Autocomplete Suggestions Overlay -->
+          <div class="autocomplete-popup hidden" id="autocomplete-popup">
+            <div class="autocomplete-item" onclick="insertWorkflow('/understand')">
+              <span class="cmd">/understand</span> - Build code/file index and search codebase
+            </div>
+            <div class="autocomplete-item" onclick="insertWorkflow('/create-plan')">
+              <span class="cmd">/create-plan</span> - Design implementation plan
+            </div>
+            <div class="autocomplete-item" onclick="insertWorkflow('/swiftui-audit')">
+              <span class="cmd">/swiftui-audit</span> - Audit SwiftUI views for performance
+            </div>
+            <div class="autocomplete-item" onclick="insertWorkflow('/grill-me')">
+              <span class="cmd">/grill-me</span> - Interview developer to resolve decisions
+            </div>
+          </div>
+
+          <!-- Workflows quick pills -->
+          <div class="workflows-pill-bar">
+            <button class="pill-btn" onclick="insertWorkflow('/understand')">/understand</button>
+            <button class="pill-btn" onclick="insertWorkflow('/create-plan')">/create-plan</button>
+            <button class="pill-btn" onclick="insertWorkflow('/swiftui-audit')">/swiftui-audit</button>
+            <button class="pill-btn" onclick="insertWorkflow('/grill-me')">/grill-me</button>
+          </div>
+
+          <!-- Input Row -->
+          <div class="agent-input-form">
+            <textarea id="agent-prompt" placeholder="Ask Antigravity to do something (press / for commands)..." rows="1" oninput="handlePromptInput(this)" onkeydown="handlePromptKeyDown(event)"></textarea>
+            <button class="btn-primary-circle" id="btn-submit-agent" onclick="submitAgentPrompt()">
+              <i data-lucide="send"></i>
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- PANEL: WORKSPACE -->
+      <section id="panel-workspace" class="tab-panel">
+        <div class="segment-control">
+          <button class="segment-btn active" id="seg-projects" onclick="switchWorkspaceSegment('projects')">Projects</button>
+          <button class="segment-btn" id="seg-conversations" onclick="switchWorkspaceSegment('conversations')">Conversations</button>
+        </div>
+
+        <!-- Segment Content: Projects -->
+        <div id="workspace-projects" class="workspace-segment-content active-segment">
+          <div class="loading-spinner" id="projects-loading">Loading active projects...</div>
+          <div class="project-list" id="projects-list"></div>
+        </div>
+
+        <!-- Segment Content: Conversations -->
+        <div id="workspace-conversations" class="workspace-segment-content">
+          <div class="loading-spinner" id="conversations-loading">Loading conversations...</div>
+          <div class="conversation-list" id="conversations-list"></div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Bottom Tab Navigation Bar -->
+    <nav class="app-nav">
+      <button class="nav-item active" onclick="switchTab('controls')">
+        <i data-lucide="sliders"></i>
+        <span>Control</span>
+      </button>
+      <button class="nav-item" onclick="switchTab('monitor')">
+        <i data-lucide="activity"></i>
+        <span>Monitor</span>
+      </button>
+      <button class="nav-item" onclick="switchTab('terminal')">
+        <i data-lucide="terminal"></i>
+        <span>Terminal</span>
+      </button>
+      <button class="nav-item" onclick="switchTab('agent')">
+        <i data-lucide="cpu"></i>
+        <span>Agent</span>
+      </button>
+      <button class="nav-item" onclick="switchTab('workspace')">
+        <i data-lucide="folder-git-2"></i>
+        <span>Workspace</span>
+      </button>
+    </nav>
+
+    <!-- Conversation Details Overlay Slider -->
+    <div class="overlay-panel" id="conversation-overlay">
+      <div class="overlay-header">
+        <button class="overlay-close-btn" onclick="closeConversationOverlay()">
+          <i data-lucide="chevron-left"></i> Back
+        </button>
+        <span class="overlay-title" id="overlay-convo-title">Chat Details</span>
+        <button class="overlay-action-btn" id="btn-activate-convo" onclick="activateCurrentOverlayConvo()">
+          Kích hoạt
+        </button>
+      </div>
+      <div class="overlay-body chat-transcript-body" id="overlay-convo-body">
+        <!-- Chat bubbles go here -->
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+  <script>
+    // Initialize Lucide icons
+    lucide.createIcons();
+  </script>
+</body>
+</html>
