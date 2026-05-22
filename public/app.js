@@ -90,16 +90,20 @@ async function attemptLogin() {
       loadConversationsDropdown();
       loadSecuritySettingsUI();
     } else {
+      const errText = await res.text();
+      alert('Đăng nhập thất bại (Server trả về lỗi): ' + errText);
       errorMsg.textContent = 'Mã PIN không đúng. Vui lòng thử lại.';
       errorMsg.classList.remove('hidden');
     }
   } catch (err) {
+    alert('Lỗi kết nối tới server (Fetch Error): ' + err.message + '\n' + err.stack);
     errorMsg.textContent = 'Lỗi kết nối tới server.';
     errorMsg.classList.remove('hidden');
   } finally {
     btnLogin.disabled = false;
   }
 }
+
 
 // Connect to websocket server
 function connect() {
@@ -108,57 +112,68 @@ function connect() {
   const pin = localStorage.getItem('antigravity_pin') || '';
   const wsUrlWithToken = pin ? `${wsUrl}?token=${pin}` : wsUrl;
   
-  socket = new WebSocket(wsUrlWithToken);
-
-  socket.onopen = () => {
-    console.log('Connected to server');
-    updateConnectionStatus('connected', 'Connected');
+  try {
+    socket = new WebSocket(wsUrlWithToken);
     
-    // Load model config and security settings initially
-    loadModelConfig();
-    loadSecuritySettingsUI();
+    socket.onopen = () => {
+      console.log('Connected to server');
+      updateConnectionStatus('connected', 'Connected');
+      
+      // Load model config and security settings initially
+      loadModelConfig();
+      loadSecuritySettingsUI();
 
-    // Subscribe to stats if the active tab is Monitor
-    if (document.getElementById('panel-monitor').classList.contains('active')) {
-      subscribeStats();
-    }
-    
-    // Initialize terminal if Terminal tab is active
-    if (document.getElementById('panel-terminal').classList.contains('active')) {
-      initTerminal();
-    }
+      // Subscribe to stats if the active tab is Monitor
+      if (document.getElementById('panel-monitor').classList.contains('active')) {
+        subscribeStats();
+      }
+      
+      // Initialize terminal if Terminal tab is active
+      if (document.getElementById('panel-terminal').classList.contains('active')) {
+        initTerminal();
+      }
 
-    // Refresh active chat if Agent tab is active
-    if (document.getElementById('panel-agent').classList.contains('active')) {
-      refreshActiveChat().then(() => loadConversationsDropdown());
-    }
-  };
+      // Refresh active chat if Agent tab is active
+      if (document.getElementById('panel-agent').classList.contains('active')) {
+        refreshActiveChat().then(() => loadConversationsDropdown());
+      }
+    };
 
-  socket.onmessage = (event) => {
-    try {
-      const msg = JSON.parse(event.data);
-      handleServerMessage(msg);
-    } catch (e) {
-      console.error('Error parsing message:', e);
-    }
-  };
+    socket.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        handleServerMessage(msg);
+      } catch (e) {
+        console.error('Error parsing message:', e);
+      }
+    };
 
-  socket.onclose = (event) => {
-    console.log('Connection closed, retrying...');
-    updateConnectionStatus('disconnected', 'Offline (Retrying...)');
-    statsSubscribed = false;
-    
-    if (event.code === 4001) {
-      showLoginOverlay();
-    } else {
-      setTimeout(connect, reconnectInterval);
-    }
-  };
+    socket.onclose = (event) => {
+      console.log('Connection closed, retrying...');
+      updateConnectionStatus('disconnected', 'Offline (Retrying...)');
+      statsSubscribed = false;
+      
+      if (event.code === 4001) {
+        showLoginOverlay();
+      } else {
+        setTimeout(connect, reconnectInterval);
+      }
+    };
 
-  socket.onerror = (err) => {
-    console.error('Socket error:', err);
-    socket.close();
-  };
+    socket.onerror = (err) => {
+      console.error('Socket error:', err);
+      try {
+        socket.close();
+      } catch (e) {}
+    };
+  } catch (err) {
+    console.error('WebSocket connection initialization failed:', err);
+    updateConnectionStatus('disconnected', 'Offline (Connection Error)');
+    showLoginOverlay();
+    // Schedule reconnect retry
+    setTimeout(connect, reconnectInterval);
+  }
+}
 }
 
 // Update UI Connection status badge

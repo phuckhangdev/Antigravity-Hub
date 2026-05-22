@@ -807,14 +807,21 @@ const authLimiter = rateLimit({
 // Auth API Endpoints
 app.post('/api/auth', authLimiter, (req, res) => {
   const { pin } = req.body;
+  const ip = req.ip || req.socket.remoteAddress;
+  console.log(`🔐 [AUTH] Login attempt from IP: ${ip}, PIN: ${pin ? '******' : 'none'}`);
+  
   if (!serverSettings.pinSecurityEnabled) {
+    console.log(`🔐 [AUTH] Success (PIN security disabled)`);
     return res.json({ success: true, message: 'Security disabled' });
   }
   if (pin === serverSettings.pin) {
+    console.log(`🔐 [AUTH] Success (Valid PIN)`);
     return res.json({ success: true });
   }
+  console.log(`🔐 [AUTH] Failed: Invalid PIN`);
   res.status(401).json({ error: 'Invalid PIN' });
 });
+
 
 app.get('/api/settings', verifyAuth, (req, res) => {
   res.json({
