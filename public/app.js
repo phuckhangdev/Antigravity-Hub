@@ -1,3 +1,32 @@
+// Safe localStorage helper to avoid crashes in private/incognito mode
+const storage = {
+  getItem(key) {
+    try {
+      return localStorage.getItem(key);
+    } catch (e) {
+      console.warn('localStorage.getItem failed:', e);
+      return this._fallbackStorage[key] || null;
+    }
+  },
+  setItem(key, value) {
+    try {
+      localStorage.setItem(key, value);
+    } catch (e) {
+      console.warn('localStorage.setItem failed:', e);
+      this._fallbackStorage[key] = value;
+    }
+  },
+  removeItem(key) {
+    try {
+      localStorage.removeItem(key);
+    } catch (e) {
+      console.warn('localStorage.removeItem failed:', e);
+      delete this._fallbackStorage[key];
+    }
+  },
+  _fallbackStorage: {}
+};
+
 // Determine websocket address based on current page address
 const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
 const wsUrl = `${wsProtocol}//${window.location.host}`;
@@ -30,7 +59,7 @@ function hideLoginOverlay() {
 }
 
 async function authFetch(url, options = {}) {
-  const pin = localStorage.getItem('antigravity_pin') || '';
+  const pin = storage.getItem('antigravity_pin') || '';
   if (!options.headers) {
     options.headers = {};
   }
@@ -74,7 +103,7 @@ async function attemptLogin() {
     });
     
     if (res.ok) {
-      localStorage.setItem('antigravity_pin', pin);
+      storage.setItem('antigravity_pin', pin);
       hideLoginOverlay();
       pinInput.value = '';
       
@@ -109,7 +138,7 @@ async function attemptLogin() {
 function connect() {
   updateConnectionStatus('connecting', 'Connecting...');
   
-  const pin = localStorage.getItem('antigravity_pin') || '';
+  const pin = storage.getItem('antigravity_pin') || '';
   const wsUrlWithToken = pin ? `${wsUrl}?token=${pin}` : wsUrl;
   
   try {
@@ -829,10 +858,17 @@ function switchTab(tabId) {
   document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
   
   // Show active panel
-  document.getElementById(`panel-${tabId}`).classList.add('active');
+  const panel = document.getElementById(`panel-${tabId}`);
+  if (panel) {
+    panel.classList.add('active');
+  }
   
-  // Activate selected nav button
-  const navBtn = Array.from(document.querySelectorAll('.nav-item')).find(btn => btn.getAttribute('onclick').includes(tabId));
+  // Activate selected nav button (preferring data-tab, falling back to onclick text query)
+  const navBtn = document.querySelector(`.nav-item[data-tab="${tabId}"]`) || 
+                 Array.from(document.querySelectorAll('.nav-item')).find(btn => {
+                   const onc = btn.getAttribute('onclick');
+                   return onc && typeof onc === 'string' && onc.includes(tabId);
+                 });
   if (navBtn) navBtn.classList.add('active');
 
   // Trigger tab-specific initialization
@@ -1135,7 +1171,7 @@ async function saveSecuritySettings() {
       
       // Update local storage PIN if enabled and changed
       if (pinSecurityEnabled && pin) {
-        localStorage.setItem('antigravity_pin', pin);
+        storage.setItem('antigravity_pin', pin);
       }
       
       setTimeout(() => {
@@ -1201,6 +1237,16 @@ setInterval(checkTunnelStatus, 5000);
 // Run on page load
 document.addEventListener('DOMContentLoaded', () => {
   setTimeout(checkTunnelStatus, 1000);
+  
+  // Dynamically bind navigation click events for environments that block inline onclick handlers
+  document.querySelectorAll('.nav-item').forEach(item => {
+    item.addEventListener('click', () => {
+      const tabId = item.getAttribute('data-tab');
+      if (tabId) {
+        switchTab(tabId);
+      }
+    });
+  });
 });
 
 async function startRemoteTunnel() {
